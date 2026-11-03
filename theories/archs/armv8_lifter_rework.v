@@ -1613,6 +1613,8 @@ Section Decoder.
     let bytes := N.shiftr size 2 in
     let datasize := N.shiftl size 1 in
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
+    (* DDI0487 M.d C6.2.265, PDF p2418: Rn = 31 selects SP. *)
+    let base := if Xn =? 31 then Var R_SP else <{X[Xn]}> in
     let address := <{Xtemp[1]}> in
     let loads := if rtunknown then
       <{var[Xt] := (unknown 64)}>
@@ -1621,7 +1623,7 @@ Section Decoder.
       <{if BigEndian then (var[Xt]:=ucast 64 data[63:32]; var[Xt2]:=ucast 64 data[31:0])
              else (var[Xt]:=ucast 64 data[31:0]; var[Xt2]:=ucast 64 data[63:32]) end}>
     else <{var[Xt]:=load[address,8]; var[Xt2]:=load[address+8#64,8]}> in
-    <{temp[1] := X[Xn]; loads}>.
+    <{temp[1] := base; loads}>.
 
   Definition arm_ldxp2il (size Xn Xt Xt2:N) :=
     let constraint := Xt =? Xt2 in
@@ -1831,12 +1833,14 @@ Section Decoder.
     let dbytes := N.shiftl 1 scale in
     let offset := (N.shiftl (scast 7 64 imm7) scale) mod 2^64 in
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
+    (* DDI0487 M.d C6.2.213, PDF p2295: Rn = 31 selects SP. *)
+    let base := if Xn =? 31 then Var R_SP else <{X[Xn]}> in
     (* DDI0487 M.d C6.2.213, PDF pp2294-2295: the pair uses one
        address computed before the destination writes, including Xt = Xn. *)
     let address := <{Xtemp[1]}> in
     let data1 := if rtunknown then <{unknown 64}> else <{ucast 64 load[address,dbytes]}> in
     let data2 := if rtunknown then <{unknown 64}> else <{ucast 64 load[address+dbytes#64,dbytes]}> in
-    <{check; temp[1] := X[Xn]+offset#64; var[Xt] := data1; var[Xt2] := data2}>.
+    <{check; temp[1] := base+offset#64; var[Xt] := data1; var[Xt2] := data2}>.
 
   Definition arm_ldnp2il Xn Xt Xt2 imm7 scale :=
     let constraint := Xt =? Xt2 in
@@ -1936,15 +1940,19 @@ Section Decoder.
     let offset := (N.shiftl (scast 7 64 imm7) 2) mod 2^64 in
     let tag_checked := wback || (negb (Xn =? 31)) in
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
+    (* DDI0487 M.d C6.2.215, PDF p2302: SP is both base and
+       writeback destination when Rn = 31. *)
+    let base := if Xn =? 31 then Var R_SP else <{X[Xn]}> in
+    let wbreg := if Xn =? 31 then R_SP else arm_varid Xn in
     (* DDI0487 M.d C6.2.215, PDF pp2301-2302: sign extension and
        destination writes follow the load using the captured address. *)
-    let initial_address := if postindex then <{X[Xn]}> else <{X[Xn]+offset#64}> in
+    let initial_address := if postindex then base else <{base+offset#64}> in
     let address := <{Xtemp[1]}> in
     let data1 := if rtunknown then <{(unknown 32)}> else <{load[address,4]}> in
     let data2 := if rtunknown then <{(unknown 32)}> else <{load[address+4#64,4]}> in
     let wbblock := if negb wback then Nop else
                    let address := if wbunknown then <{unknown 64}> else if postindex then <{address+offset#64}> else address in
-                   <{var[Xn]:=address}> in
+                   <{ {wbreg} := address }> in
     <{check; temp[1] := initial_address; var[Xt]:=scast 64 data1; var[Xt2]:=scast 64 data2; wbblock}>.
 
   Definition arm_ldpsw2il (Xn Xt Xt2 imm7:N) (wback postindex:bool) :=
@@ -5162,7 +5170,7 @@ Proof.
                   (c2 := update armc (V_TEMP 1) (Some 64)).
   - apply TMove with (w := 64).
     + left; reflexivity.
-    + apply hastyp_XtoVar; reflexivity.
+    + destruct (Xn =? 31); [etyp|apply hastyp_XtoVar]; reflexivity.
     + reflexivity.
   - destruct rtunknown, (size =? 32); unfold BigEndian;
       stypc (update armc (V_TEMP 1) (Some 64)).
