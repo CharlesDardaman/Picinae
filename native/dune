@@ -1,0 +1,8 @@
+; Keep the legacy source location while checking its complete proofs in @all.
+(copy_files ../armv7_lifter.v)
+
+(rocq.theory
+ (name PicinaeArmv7Lifter)
+ (package picinae-rocq)
+ (modules armv7_lifter)
+ (theories Picinae Stdlib))
