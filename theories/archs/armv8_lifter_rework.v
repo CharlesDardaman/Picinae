@@ -1507,11 +1507,14 @@ Section Decoder.
     Definition arm_stlxrh2il := arm_stxr2il_size 16.
     Definition arm_stlxr2il := arm_stxr2il_size.
 
+    (* DDI0487 M.d C6.2.399-404, PDF pp2694-2701:
+       Rn=31 selects SP; transfer registers keep their original interpretation. *)
     Definition arm_stllr2il_size (size Xn Xt:N) :=
       let bytes := N.shiftr size 3 in
+      let base := if Xn =? 31 then Var R_SP else <{X[Xn]}> in
       let check := if Xn =? 31 then CheckSPAlignment else Nop in
       <{ check;
-         store[X[Xn],(lcast size X[Xt]),bytes]
+         store[base,(lcast size X[Xt]),bytes]
       }>.
 
     Definition arm_stllrb2il := arm_stllr2il_size 8.
@@ -1574,12 +1577,16 @@ Section Decoder.
   Definition arm_stxp2il := arm_stxp2il_size.
   Definition arm_stlxp2il := arm_stxp2il_size.
 
+  (* DDI0487 M.d C6.2.266-268, PDF pp2420-2422;
+     C6.2.192-194/197-199/210-212, PDF pp2253-2255/2261-2264/2289-2292:
+     Rn=31 selects SP; transfer registers keep their original interpretation. *)
   Definition arm_ldxr2il_size (size Xn Xt:N) :=
     let bytes := N.shiftr size 3 in
+    let base := if Xn =? 31 then Var R_SP else <{X[Xn]}> in
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
     <{
       check;
-      var[Xt] := ucast 64 load[X[Xn],bytes]
+      var[Xt] := ucast 64 load[base,bytes]
     }>.
 
   Definition arm_ldxrb2il := arm_ldxr2il_size 8.
@@ -1705,10 +1712,13 @@ Section Decoder.
     else UDF end.
 
   (* size - bits to store in memory *)
+  (* DDI0487 M.d C6.2.406-408, PDF pp2706-2710:
+     Rn=31 selects SP; transfer registers keep their original interpretation. *)
   Definition arm_stlur2il_size size (Xn Xt imm9:N) :=
     let offset := scast 9 64 imm9 in
+    let base := if Xn =? 31 then Var R_SP else <{X[Xn]}> in
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
-    let address := <{X[Xn]+offset#64}> in
+    let address := <{base+offset#64}> in
     let bytes := N.shiftr size 3 in
     (* DDI0487 M.d C6.2.406-408, PDF pp2706/2708/2710: data is X[t,datasize]. *)
     <{ check; store[address,lcast size X[Xt],bytes] }>.
@@ -1720,10 +1730,13 @@ Section Decoder.
   (* size - size to read from memory
      signed - whether to sign extend to w'
      w' - the length to sign extend to *)
+  (* DDI0487 M.d C6.2.186-191, PDF pp2241-2251:
+     Rn=31 selects SP; transfer registers keep their original interpretation. *)
   Definition arm_ldapur2il_size_signed size (signed:bool) w' Xn Xt imm9 :=
     let offset := scast 9 64 imm9 in
+    let base := if Xn =? 31 then Var R_SP else <{X[Xn]}> in
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
-    let address := <{X[Xn]+offset#64}> in
+    let address := <{base+offset#64}> in
     let bytes := N.shiftr size 3 in
     let data := if signed then <{scast w' load[address,LittleE,bytes]}>
                 else <{load[address,LittleE,bytes]}> in
@@ -2056,10 +2069,13 @@ Section Decoder.
     | "11  -  -" => UDF (* Unallocated *)
     else UDF end.
 
+  (* DDI0487 M.d C6.2.446-448, PDF pp2796-2800:
+     Rn=31 selects SP; transfer registers keep their original interpretation. *)
   Definition arm_stur2il_size size Xn Xt imm9 :=
     let offset := scast 9 64 imm9 in
+    let base := if Xn =? 31 then Var R_SP else <{X[Xn]}> in
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
-    let address := <{X[Xn]+offset#64}> in
+    let address := <{base+offset#64}> in
     let bytes := N.shiftr size 3 in
     <{check; store[address, lcast size X[Xt], bytes]}>.
 
@@ -2067,10 +2083,13 @@ Section Decoder.
   Definition arm_sturh2il := arm_stur2il_size 16.
   Definition arm_stur2il := arm_stur2il_size.
 
+  (* DDI0487 M.d C6.2.259-264, PDF pp2406-2416:
+     Rn=31 selects SP; transfer registers keep their original interpretation. *)
   Definition arm_ldur2il_size size (signed:bool) w' Xn Xt imm9 :=
     let offset := scast 9 64 imm9 in
+    let base := if Xn =? 31 then Var R_SP else <{X[Xn]}> in
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
-    let address := <{X[Xn]+offset#64}> in
+    let address := <{base+offset#64}> in
     let bytes := N.shiftr size 3 in
     let data := if signed then <{scast w' load[address,bytes]}> else <{load[address,bytes]}> in
     <{check; var[Xt] := ucast 64 data}>.
@@ -2125,6 +2144,8 @@ Section Decoder.
 
 
   (* Size is 8, 16, 32, or 64 *)
+  (* DDI0487 M.d C6.2.415/417/419, PDF pp2730/2735-2736/2740-2741:
+     Rn=31 selects SP for both the address and indexed writeback. *)
   Definition arm_str_imm2il_size_constr (size Xn Xt imm912:N) (signed wback postindex rtunknown:bool) :=
     let offset := if signed then scast 9 64 imm912 else
                   (N.shiftl imm912 (N.log2 size - 3)) mod 2^64 in
@@ -2132,12 +2153,14 @@ Section Decoder.
     let datasize := size in
     let bytes := N.shiftr size 3 in
     let tag_checked := wback || (negb (Xn=?31)) in
+    let base := if Xn =? 31 then Var R_SP else <{X[Xn]}> in
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
-    let address := if postindex then <{X[Xn]}> else <{X[Xn]+offset#64}> in
+    let address := if postindex then base else <{base+offset#64}> in
     let data := if rtunknown then <{unknown datasize}> else <{lcast datasize X[Xt]}> in
+    let wbreg := if Xn =? 31 then R_SP else arm_varid Xn in
     let wbblock := if negb wback then Nop else
                    let address := if postindex then <{address+offset#64}> else address in
-                   <{var[Xn]:=address}> in
+                   <{ {wbreg} := address }> in
     <{ check; store[address,data,bytes]; wbblock }>.
 
 
@@ -2154,6 +2177,8 @@ Section Decoder.
   Definition arm_strb_imm2il := arm_str_imm2il_size 8.
   Definition arm_strh_imm2il := arm_str_imm2il_size 16.
 
+  (* DDI0487 M.d C6.2.216/220/222, PDF pp2305/2314-2315/2319-2320:
+     Rn=31 selects SP for both the address and indexed writeback. *)
   Definition arm_ldr_imm2il_size_constr (size Xn Xt imm912:N) (signed wback postindex wbunknown:bool) :=
     let offset := if signed then scast 9 64 imm912 else
                   (N.shiftl imm912 (N.log2 size - 3)) mod 2^64 in
@@ -2161,12 +2186,14 @@ Section Decoder.
     let datasize := size in
     let bytes := N.shiftr datasize 3 in
     let tag_checked := wback || (negb (Xn =? 31)) in
+    let base := if Xn =? 31 then Var R_SP else <{X[Xn]}> in
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
-    let address := if postindex then <{X[Xn]}> else <{X[Xn]+offset#64}> in
+    let address := if postindex then base else <{base+offset#64}> in
     let data := <{load[address,bytes]}> in
+    let wbreg := if Xn =? 31 then R_SP else arm_varid Xn in
     let wbblock := if negb wback then Nop else
                    let address := if wbunknown then <{unknown 64}> else if postindex then <{address+offset#64}> else address in
-                   <{var[Xn]:=address}> in
+                   <{ {wbreg} := address }> in
     <{ check; var[Xt]:=ucast 64 data; wbblock }>.
 
   (* imm912 is 9bits if signed is true, 12 bits otherwise *)
@@ -2185,16 +2212,20 @@ Section Decoder.
 
   (* Where w is the width to load from memory (8, 16 or 32) and w'
      is the width to extend it to (32 or 64). *)
+  (* DDI0487 M.d C6.2.224/226/228, PDF pp2325/2330/2334-2335:
+     Rn=31 selects SP for both the address and indexed writeback. *)
   Definition arm_ldrs_imm2il_size_constr (w w' Xn Xt imm912:N) (signed wback postindex wbunknown:bool) :=
     let offset := if signed then scast 9 64 imm912 else
                   (N.shiftl imm912 (N.log2 w - 3)) mod 2^64 in
+    let base := if Xn =? 31 then Var R_SP else <{X[Xn]}> in
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
-    let address := if postindex then <{X[Xn]}> else <{X[Xn]+offset#64}> in
+    let address := if postindex then base else <{base+offset#64}> in
     let bytes := N.shiftr w 3 in
     let data := <{load[address,bytes]}> in
+    let wbreg := if Xn =? 31 then R_SP else arm_varid Xn in
     let wbblock := if negb wback then Nop else
                    let address := if wbunknown then <{unknown 64}> else if postindex then <{address+offset#64}> else address in
-                   <{var[Xn]:=address}> in
+                   <{ {wbreg} := address }> in
     <{check; var[Xt] := ucast 64 (scast w' data); wbblock}>.
 
   Definition arm_ldrs_imm2il_size (w w' Xn Xt imm912:N) (signed wback postindex:bool) :=
@@ -2251,10 +2282,13 @@ Section Decoder.
     | "11  1  01" => UDF (* LDR (immediate, SIMD&FP) - 64-bit variant on page C7-135 *)
     else UDF end.
 
+  (* DDI0487 M.d C6.2.435-437, PDF pp2773/2775/2777:
+     Rn=31 selects SP; transfer registers keep their original interpretation. *)
   Definition arm_sttr2il_size size (Xn Xt imm9:N) :=
     let offset := scast 9 64 imm9 in
+    let base := if Xn =? 31 then Var R_SP else <{X[Xn]}> in
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
-    let address := <{X[Xn]+offset#64}> in
+    let address := <{base+offset#64}> in
     let bytes := N.shiftr size 3 in
     <{check; store[address,lcast size X[Xt],bytes]}>.
 
@@ -2262,9 +2296,12 @@ Section Decoder.
   Definition arm_sttrh2il := arm_sttr2il_size 16.
   Definition arm_sttr2il := arm_sttr2il_size.
 
+  (* DDI0487 M.d C6.2.245-250, PDF pp2375-2385:
+     Rn=31 selects SP; transfer registers keep their original interpretation. *)
   Definition arm_ldtr2il_size_signed size (signed:bool) w' Xn Xt imm9 :=
     let offset := scast 9 64 imm9 in
-    let address := <{X[Xn]+offset#64}> in
+    let base := if Xn =? 31 then Var R_SP else <{X[Xn]}> in
+    let address := <{base+offset#64}> in
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
     let bytes := N.shiftr size 3 in
     let data := if signed then <{scast w' load[address,bytes]}> else <{load[address,bytes]}> in
@@ -2445,11 +2482,14 @@ Section Decoder.
   Definition arm_swph2il := arm_swp2il_size 16.
   Definition arm_swp2il := arm_swp2il_size.
 
+  (* DDI0487 M.d C6.2.183-185, PDF pp2234-2238:
+     Rn=31 selects SP; transfer registers keep their original interpretation. *)
   Definition arm_ldapr2il_size (size Xn Xt:N) :=
+    let base := if Xn =? 31 then Var R_SP else <{X[Xn]}> in
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
     let bytes := N.shiftr size 3 in  <{
       check;
-      var[Xt] := ucast 64 {MemRead <{X[Xn]}> bytes}
+      var[Xt] := ucast 64 {MemRead base bytes}
     }>.
 
   Definition arm_ldaprb2il := arm_ldapr2il_size 8.
@@ -2649,15 +2689,19 @@ Section Decoder.
   (* size - bits to load
      signed - whether to sign extend loaded value
      w' - width to sign extend to *)
+  (* DDI0487 M.d C6.2.218/221/223/225/227/230,
+     PDF pp2308-2309/2317/2322/2327/2332/2338:
+     Rn=31 selects SP; transfer registers keep their original interpretation. *)
   Definition arm_ldr_reg2il_size_signed size (signed:bool) w' S Xn Xm Xt extend :=
     let shift := match size, S with
                  | 16, 1 => 1 (* DDI0487 M.d C6.2.223/227, PDF pp2321/2331. *)
                  | 32, 1 => 2
                  | 64, 1 => 3
                  | _, _ => 0 end in
+    let base := if Xn =? 31 then Var R_SP else <{X[Xn]}> in
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
     let offset := ExtendReg' 64 Xm extend shift in
-    let address := <{X[Xn]+offset}> in
+    let address := <{base+offset}> in
     let bytes := N.shiftr size 3 in
     let data := if signed then <{scast w' load[address,bytes]}> else <{load[address,bytes]}> in
     <{check; var[Xt] := ucast 64 data}>.
@@ -2670,15 +2714,18 @@ Section Decoder.
   Definition arm_ldrsh_reg2il := arm_ldr_reg2il_size_signed 16 true.
   Definition arm_ldrsw_reg2il := arm_ldr_reg2il_size_signed 32 true 64.
 
+  (* DDI0487 M.d C6.2.416/418/420, PDF pp2732-2733/2738/2743:
+     Rn=31 selects SP; transfer registers keep their original interpretation. *)
   Definition arm_str_reg2il_size size S Xn Xm Xt extend :=
     let shift := match size, S with
                  | 16, 1 => 1 (* DDI0487 M.d C6.2.420, PDF p2742. *)
                  | 32, 1 => 2
                  | 64, 1 => 3
                  | _, _ => 0 end in
+    let base := if Xn =? 31 then Var R_SP else <{X[Xn]}> in
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
     let offset := ExtendReg' 64 Xm extend shift in
-    let address := <{X[Xn]+offset}> in
+    let address := <{base+offset}> in
     let bytes := N.shiftr size 3 in
     let data := <{lcast size X[Xt]}> in
     <{check; store[address,data,bytes]}>.
@@ -5344,9 +5391,17 @@ Local Lemma hastyp_arm_str_imm2il_size_constr:
   (B6: N.shiftr size 3 * 8 = size),
   hastyp_stmt armc armc_pc (arm_str_imm2il_size_constr size Xn Xt imm912 signed wback postindex rtunknown) armc.
 Proof.
-  intros; unfold_stmt. apply hastyp_stmt_weaken with (c1 := arm8typctx). destruct_match.
-  29: apply armc_pc_sub.
-  all: try solve [repeat econs; try solve [apply N.mod_lt; discriminate]; try reflexivity; subsolve; symmetry; reflexivity].
+  intros; unfold_stmt. apply hastyp_stmt_weaken with (c1 := arm8typctx).
+  destruct_match.
+  all: try apply armc_pc_sub.
+  all: repeat econs.
+  all: try solve [apply N.mod_lt; discriminate].
+  all: try reflexivity.
+  all: try solve [subsolve; symmetry; (reflexivity || apply typeof_arm_varid)].
+  all: try solve [
+    apply hastyp_exp_weaken with (c1 := armc);
+      [ etyp; try apply scast_bound; try solve [apply N.mod_lt; discriminate]
+      | subsolve; symmetry; (reflexivity || apply typeof_arm_varid) ]].
 Qed.
 Hint Resolve  hastyp_arm_str_imm2il_size_constr : lifter.
 
@@ -5380,9 +5435,17 @@ Local Lemma hastyp_arm_ldr_imm2il_size_constr:
   (B1:Xn<2^5)  (B3:Xt<2^5) (B4:if signed then imm912<2^9 else imm912<2^12) (B5:size=8\/size=16\/size=32\/size=64),
   hastyp_stmt armc armc_pc (arm_ldr_imm2il_size_constr size Xn Xt imm912 signed wback postindex wbunknown) armc.
 Proof.
-  intros; unfold_stmt. apply hastyp_stmt_weaken with (c1 := arm8typctx). destruct_match.
-  21: apply armc_pc_sub.
-  all: try solve [repeat econs; try solve [apply N.mod_lt; discriminate]; try reflexivity; subsolve; symmetry; (reflexivity||apply typeof_arm_varid)].
+  intros; unfold_stmt. apply hastyp_stmt_weaken with (c1 := arm8typctx).
+  destruct_match.
+  all: try apply armc_pc_sub.
+  all: repeat econs.
+  all: try solve [apply N.mod_lt; discriminate].
+  all: try reflexivity.
+  all: try solve [subsolve; symmetry; (reflexivity || apply typeof_arm_varid)].
+  all: try solve [
+    apply hastyp_exp_weaken with (c1 := armc);
+      [ etyp; try apply scast_bound; try solve [apply N.mod_lt; discriminate]
+      | subsolve; symmetry; (reflexivity || apply typeof_arm_varid) ]].
 Qed.
 Hint Resolve  hastyp_arm_ldr_imm2il_size_constr : lifter.
 
@@ -5414,9 +5477,17 @@ Local Lemma hastyp_arm_ldrs_imm2il_size_constr:
   (B1:Xn<2^5) (B3:Xt<2^5) (B4:if signed then imm912<2^9 else imm912<2^12) (B5:w'=32\/w'=64) (B6:size=8\/size=16\/size=32),
   hastyp_stmt armc armc_pc (arm_ldrs_imm2il_size_constr size w' Xn Xt imm912 signed wback postindex wbunknown) armc.
 Proof.
-  intros; unfold_stmt. apply hastyp_stmt_weaken with (c1 := arm8typctx). destruct_match.
-  21: apply armc_pc_sub.
-  all: try solve [repeat econs; try solve [apply N.mod_lt; discriminate]; try reflexivity; subsolve; symmetry; (reflexivity||apply typeof_arm_varid)].
+  intros; unfold_stmt. apply hastyp_stmt_weaken with (c1 := arm8typctx).
+  destruct_match.
+  all: try apply armc_pc_sub.
+  all: repeat econs.
+  all: try solve [apply N.mod_lt; discriminate].
+  all: try reflexivity.
+  all: try solve [subsolve; symmetry; (reflexivity || apply typeof_arm_varid)].
+  all: try solve [
+    apply hastyp_exp_weaken with (c1 := armc);
+      [ etyp; try apply scast_bound; try solve [apply N.mod_lt; discriminate]
+      | subsolve; symmetry; (reflexivity || apply typeof_arm_varid) ]].
 Qed.
 Hint Resolve  hastyp_arm_ldrs_imm2il_size_constr : lifter.
 
@@ -5480,11 +5551,20 @@ Local Lemma hastyp_arm_ldr_reg2il_size_signed:
   (B9:(size=?64)&&signed=false),
   hastyp_stmt armc armc_pc (arm_ldr_reg2il_size_signed size signed w' S Xn Xm Xt extend) armc.
 Proof.
-  intros; unfold_stmt. 
-  
+  intros; unfold_stmt.
   apply hastyp_stmt_weaken with (c1 := arm8typctx). destruct_match.
   all: try apply armc_pc_sub.
-  all: try solve [repeat econs; try reflexivity; subsolve; symmetry; (reflexivity||apply typeof_arm_varid)]. 
+  all: repeat first [
+    match goal with
+    | |- hastyp_exp _ (Cast _ _ _) _ => eapply TCast
+    | |- hastyp_exp _ (Load _ _ _ _) _ => eapply TLoad with (w := 64)
+    end | econs].
+  all: try solve [subsolve; symmetry; (reflexivity || apply typeof_arm_varid)].
+  all: try solve [
+    apply TBinOp with (w := 64);
+      [ (etyp; reflexivity) || (apply hastyp_XtoVar; reflexivity)
+      | apply hastyp_ExtendReg'; try reflexivity; lia ]].
+  all: try lia.
 Qed.
 Hint Resolve  hastyp_arm_ldr_reg2il_size_signed : lifter.
 
@@ -5718,18 +5798,11 @@ Local Lemma hastyp_arm_ldapr2il_size:
   forall size Xn Xt (B1:Xn<2^5) (B2:Xt<2^5) (B3:size=8\/size=16\/size=32\/size=64),
   hastyp_stmt armc armc_pc (arm_ldapr2il_size size Xn Xt) armc.
 Proof.
-  intros; unfold_stmt. destruct_match. 
-  - econs. apply hastyp_CheckSPAlignment. apply armc_pc_sub. 
-  econs. 3: reflexivity. eapply TCast with (w := (size >> 3) * 8).
-   eapply hastyp_MemRead. apply hastyp_XtoVar. all: try lia.
-   3: rewrite armc_pc_upd. 
-   all: try apply armc_pc_sub. apply typeof_arm_varid.
-  - econs.
-  econs. 3: reflexivity. eapply TCast with (w := (size >> 3) * 8).
-   eapply hastyp_MemRead. apply hastyp_XtoVar. all: try lia.
-   3: rewrite armc_pc_upd. 
-   all: try apply armc_pc_sub. apply typeof_arm_varid.
-  
+  intros; unfold_stmt.
+  apply hastyp_stmt_weaken with (c1 := arm8typctx). destruct_match.
+  all: try apply armc_pc_sub.
+  all: repeat econs.
+  all: try solve [subsolve; symmetry; (reflexivity || apply typeof_arm_varid)].
 Qed.
 Hint Resolve  hastyp_arm_ldapr2il_size : lifter.
 
@@ -5973,7 +6046,7 @@ intros.
   2: reflexivity. eapply TMove. right. reflexivity.
   eapply TStore with (w := 64). lia. 
   apply hastyp_exp_weaken with (c1:=armc). econs. apply armc_pc_sub.
-  apply hastyp_exp_weaken with (c1:=armc). apply hastyp_XtoVar. reflexivity. apply armc_pc_sub.
+  apply hastyp_exp_weaken with (c1:=armc). apply TVar. reflexivity. apply armc_pc_sub.
   econs. rewrite H. eapply TCast with (w := 64).  apply hastyp_XtoVar. apply armc_pc_sub. lia.
   rewrite armc_pc_upd. apply armc_pc_sub. reflexivity.
   - econs. 2: reflexivity. eapply TMove. right. reflexivity.
