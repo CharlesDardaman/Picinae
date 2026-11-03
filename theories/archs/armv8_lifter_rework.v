@@ -177,9 +177,10 @@ Notation "'temp[' n ']'" := (V_TEMP n) (at level 65, no associativity).
 
 Definition arm_assign_R n val := Move (arm_varid n) val. (*TODO: Need to fix this*)
 Definition arm_assign_flags flags :=
-    let '(n, z, c, v) := Unpack_NZCV flags in
-
-    (Seq (Move R_NG n) (Seq (Move R_ZR z) (Seq (Move R_CY c) (Move R_OV v)))).
+    (* Evaluate the packed flags before changing any flag read by their expression. *)
+    let '(n, z, c, v) := Unpack_NZCV (Cast CAST_LOW 4 (Var R_TMPNG)) in
+    Seq (Move R_TMPNG (Cast CAST_UNSIGNED 8 flags))
+        (Seq (Move R_NG n) (Seq (Move R_ZR z) (Seq (Move R_CY c) (Move R_OV v)))).
 
 Definition arm64_R n N :=
      if (N =? 32) then Cast CAST_LOW 32 (Var (arm_varid n))
@@ -2844,6 +2845,7 @@ Section Decoder.
     let sf := n.[31] in
     let s_ := n.[29] in
     let opcode := n.[10,16] in
+    let Rm := n.[16,21] in let Rn := n.[5,10] in let Rd := n.[0,5] in
   match[bits] sf, s_, opcode with
     | "-  -  000001" => UDF (* Unallocated. - *)
     | "-  -  011xxx" => UDF (* Unallocated. - *)
@@ -2859,10 +2861,10 @@ Section Decoder.
     | "0  0  000010" => ARM_UDIV (* UDIV - 32-bit variant on page C6-1356 - *)
     | "0  0  000011" => ARM_SDIV (* SDIV - 32-bit variant on page C6-1174 - *)
     | "0  0  00010x" => UDF (* Unallocated. - *)
-    | "0  0  001000" => ARM_LSLV (* LSLV - 32-bit variant on page C6-1077 - *)
-    | "0  0  001001" => ARM_LSRV (* LSRV - 32-bit variant on page C6-1083 - *)
-    | "0  0  001010" => ARM_ASRV (* ASRV - 32-bit variant on page C6-787 - *)
-    | "0  0  001011" => ARM_RORV (* RORV - 32-bit variant on page C6-1161 - *)
+    | "0  0  001000" => ARM_SHIFT ARM_LSLV_REG sf Rm 0 Rn Rd
+    | "0  0  001001" => ARM_SHIFT ARM_LSRV_REG sf Rm 1 Rn Rd
+    | "0  0  001010" => ARM_SHIFT ARM_ASRV_REG sf Rm 2 Rn Rd
+    | "0  0  001011" => ARM_SHIFT ARM_RORV_REG sf Rm 3 Rn Rd
     | "0  0  001100" => UDF (* Unallocated. - *)
     | "0  0  010x11" => UDF (* Unallocated. - *)
     | "0  0  010000" => ARM_CRC32B (* CRC32B, CRC32H, CRC32W, CRC32X - CRC32B variant on page C6-866 - *)
@@ -2876,10 +2878,10 @@ Section Decoder.
     | "1  0  000011" => ARM_SDIV (* SDIV - 64-bit variant on page C6-1174 - *)
     | "1  0  000100" => ARM_IRG (* IRG Armv8.5 *)
     | "1  0  000101" => ARM_GMI (* GMI Armv8.5 *)
-    | "1  0  001000" => ARM_LSLV (* LSLV - 64-bit variant on page C6-1077 - *)
-    | "1  0  001001" => ARM_LSRV (* LSRV - 64-bit variant on page C6-1083 - *)
-    | "1  0  001010" => ARM_ASRV (* ASRV - 64-bit variant on page C6-787 - *)
-    | "1  0  001011" => ARM_RORV (* RORV - 64-bit variant on page C6-1161 - *)
+    | "1  0  001000" => ARM_SHIFT ARM_LSLV_REG sf Rm 0 Rn Rd
+    | "1  0  001001" => ARM_SHIFT ARM_LSRV_REG sf Rm 1 Rn Rd
+    | "1  0  001010" => ARM_SHIFT ARM_ASRV_REG sf Rm 2 Rn Rd
+    | "1  0  001011" => ARM_SHIFT ARM_RORV_REG sf Rm 3 Rn Rd
     | "1  0  001100" => ARM_PACGA (* PACGA Armv8.3 *)
     | "1  0  010xx0" => UDF (* Unallocated. - *)
     | "1  0  010x0x" => UDF (* Unallocated. - *)
@@ -3194,15 +3196,14 @@ Section Decoder.
   (*Shared Functions for Shift, Extend, AddWCarry*)
   Definition AddWithCarry datasize x y carry_in:=
     let unsigned_sum := BinOp OP_PLUS (BinOp OP_PLUS x y) (Cast CAST_UNSIGNED datasize carry_in) in
-    let signed_sum := BinOp OP_PLUS (BinOp OP_PLUS x y) (Cast CAST_SIGNED datasize carry_in) in
     let result := unsigned_sum in
     let n := Cast CAST_HIGH 1 result in
-    let z :=  (UnOp OP_NOT (BinOp OP_EQ (Word 0 datasize) result)) in
-    let c := BinOp OP_OR (BinOp OP_LT result x) (BinOp OP_AND (BinOp OP_EQ (Word (N.ones datasize) datasize) result) carry_in) in
-    let v := BinOp OP_OR
-            (BinOp OP_SLT
-            (BinOp OP_AND (BinOp OP_XOR x result)(BinOp OP_XOR y result))(Word 0 datasize))
-            (BinOp OP_AND (BinOp OP_EQ (Word (N.ones datasize) datasize) result) carry_in) in
+    let z := BinOp OP_EQ (Word 0 datasize) result in
+    let c := BinOp OP_OR (BinOp OP_LT result x)
+             (BinOp OP_AND (BinOp OP_EQ result x) carry_in) in
+    let v := BinOp OP_SLT
+             (BinOp OP_AND (BinOp OP_XOR x result) (BinOp OP_XOR y result))
+             (Word 0 datasize) in
 
     let nzcv := Pack_NZCV n z c v in
     (result, nzcv).
@@ -3290,8 +3291,14 @@ Section Decoder.
 
   Definition arm_data_il (assign assign_flags:bool) (Rn:N) (result flags: exp):=
   let assign_check := if assign then arm_assign_R Rn result else Nop in
-  let assign_flag := if assign_flags then arm_assign_flags flags else assign_check in
-  assign_flag.
+  if assign_flags then
+    if assign then
+      (* Preserve operand-dependent flags before writing the destination; preserve
+         incoming carry until the result expression has also been evaluated. *)
+      Seq (Move R_TMPNG (Cast CAST_UNSIGNED 8 flags))
+          (Seq assign_check (arm_assign_flags (Cast CAST_LOW 4 (Var R_TMPNG))))
+    else arm_assign_flags flags
+  else assign_check.
 
   (*Returns an exp*)
   Definition arm_data_r_shiftc (sf s shift Rm:N) imm6 (Rn Rd:N) (assign assign_flags: bool) (op:exp -> exp -> exp) :=
@@ -3303,12 +3310,14 @@ Section Decoder.
          let operand1 := R[ Rn , datasize] in
   let result := op operand1 operand2 in
   let result64 := if sf =? 1 then result else Cast CAST_UNSIGNED 64 result in
-  arm_data_il assign assign_flags Rd result64 (Unknown 4)
+  let flags := Pack_NZCV (Cast CAST_HIGH 1 result)
+                 (BinOp OP_EQ result (Word 0 datasize)) (Word 0 1) (Word 0 1) in
+  arm_data_il assign assign_flags Rd result64 flags
   end.
 
   (*op : the actual AddWithCarry
   instr : for ANDS and BICS*)
-  Definition arm_data_r_addwithcarry (cond sf s shift Rm:N) imm6 (Rn:N) (assign assign_flag:bool) (op:exp -> exp -> exp->exp*exp) :=
+  Definition arm_data_r_addwithcarry (cond sf s shift Rm:N) imm6 (Rn Rd:N) (assign assign_flag:bool) (op:exp -> exp -> exp->exp*exp) :=
   let datasize := if sf =? 1 then 64 else 32 in
   let shift_type := DecodeShift shift in
   if shift=? 3 then Nop else 
@@ -3319,7 +3328,7 @@ Section Decoder.
   let (result, nzcv) := op operand1 operand2 (Unknown datasize) in
   (*assign=assign to register, assign_flag=set flag values*)
   let result64 := if sf =? 1 then result else Cast CAST_UNSIGNED 64 result in
-  arm_data_il assign assign_flag Rn result64 nzcv
+  arm_data_il assign assign_flag Rd result64 nzcv
   end.
 
   (*only for arith functions, this is the "addwcarry"*)
@@ -3359,9 +3368,9 @@ Section Decoder.
   let datasize := if sf =? 1 then 64 else 32 in
   let operand2 := R[ Rm , datasize] in
   let operand1 := R[ Rn, datasize ] in
-  let (result,_) := op operand1 operand2 (Word 0 1) in
+  let (result,flags) := op operand1 operand2 (Word 0 1) in
   let result64 := if sf =? 1 then result else Cast CAST_UNSIGNED 64 result in
-  arm_data_il assign assign_flags Rd result64 (Unknown 4)
+  arm_data_il assign assign_flags Rd result64 flags
   .
 
   Definition arm_data_r_with_cond (op:arm_data_r_inst) (cond sf Rm Rn nzcv:N):=
@@ -3380,7 +3389,7 @@ Section Decoder.
 
   Definition arm_datashft_reg2il op (cond sf s shift Rm Rd:N) imm6 (Rn:N):=
     let datasize := if sf =? 1 then 64 else 32 in
-    let arm_addwithcarry := arm_data_r_addwithcarry cond sf s shift Rm imm6 Rn in
+    let arm_addwithcarry := arm_data_r_addwithcarry cond sf s shift Rm imm6 Rn Rd in
     match op with
     | ARM_ADD_SHIFTED_REG => arm_addwithcarry true false (fun a b _ => AddWithCarry datasize a b (Word 0 1))
     | ARM_ADDS_SHIFTED_REG => arm_addwithcarry true true (fun a b _ => AddWithCarry datasize a b (Word 0 1))
@@ -3394,7 +3403,7 @@ Section Decoder.
     | ARM_AND_LOG_REG => arm_shiftc true false (fun a b => BinOp OP_AND a b)
     | ARM_ANDS_LOG_REG |ARM_TST_LOG_REG => arm_shiftc true true (fun a b => BinOp OP_AND a b)
     | ARM_BIC_LOG_REG => arm_shiftc true false (fun a b => BinOp OP_AND a (UnOp OP_NOT b))
-    | ARM_BICS_LOG_REG => arm_shiftc true false (fun a b => BinOp OP_AND a (UnOp OP_NOT b))
+    | ARM_BICS_LOG_REG => arm_shiftc true true (fun a b => BinOp OP_AND a (UnOp OP_NOT b))
     | ARM_ORR_LOG_REG |ARM_MOV_LOG_REG=> arm_shiftc true false (fun a b => BinOp OP_OR a b)
     | ARM_ORN_LOG_REG |ARM_MVN_LOG_REG  => arm_shiftc true false (fun a b => BinOp OP_OR a (UnOp OP_NOT b))
     | ARM_EOR_LOG_REG => arm_shiftc true false (fun a b => BinOp OP_XOR a b) (*TODO: EORS?*)
@@ -4090,11 +4099,19 @@ Lemma hastyp_arm_assign_flags:
     hastyp_exp armc flags 4 ->
     hastyp_stmt armc c (arm_assign_flags flags) armc.
 Proof.
-  intros. unfold arm_assign_flags.
-  destruct (Unpack_NZCV flags) as [[[? z] c0] v] eqn:Hunpack.
-  pose proof (hastyp_Unpack_NZCV arm8typctx flags H0) as Hcomp.
+  intros. apply hastyp_stmt_weaken with (c1 := armc); [|assumption].
+  unfold arm_assign_flags.
+  destruct (Unpack_NZCV (Cast CAST_LOW 4 (Var R_TMPNG))) as [[[? z] c0] v] eqn:Hunpack.
+  assert (Ht : hastyp_exp armc (Cast CAST_LOW 4 (Var R_TMPNG)) 4) by (etyp; cbn; lia).
+  pose proof (hastyp_Unpack_NZCV armc _ Ht) as Hcomp.
   rewrite Hunpack in Hcomp. destruct Hcomp as [Hn [Hz [Hc0 Hc]]].
-  styp; cbn; try eassumption. eapply hastyp_exp_weaken with (c1:= arm8typctx) (c2:=c); eassumption.
+  eapply TSeq with (c1 := armc) (c2 := armc).
+  - apply TMove with (w := 8).
+    + right; reflexivity.
+    + apply TCast with (w := 4); [assumption|cbn; lia].
+    + apply update_some; reflexivity.
+  - styp; cbn; assumption.
+  - reflexivity.
 Qed.
 Hint Resolve  hastyp_arm_assign_flags : lifter.
 
@@ -4139,10 +4156,21 @@ Local Lemma hastyp_arm_data_il:
     hastyp_exp armc flags 4 ->
     hastyp_stmt armc c (arm_data_il assign assign_flags Rn result flags) armc.
 Proof.
-  intros. unfold_stmt. destruct assign_flags.
-  apply hastyp_arm_assign_flags; assumption.
-  destruct assign. apply hastyp_assign_R; assumption.
-  styp. assumption.
+  intros. apply hastyp_stmt_weaken with (c1 := armc); [|assumption].
+  unfold arm_data_il. destruct assign_flags.
+  - destruct assign.
+    + eapply TSeq with (c1 := armc) (c2 := armc).
+      * apply TMove with (w := 8).
+        -- right; reflexivity.
+        -- apply TCast with (w := 4); [assumption|cbn; lia].
+        -- apply update_some; reflexivity.
+      * eapply TSeq with (c1 := armc) (c2 := armc).
+        -- apply hastyp_assign_R; [reflexivity|assumption].
+        -- apply hastyp_arm_assign_flags; [reflexivity|etyp; cbn; lia].
+        -- reflexivity.
+      * reflexivity.
+    + apply hastyp_arm_assign_flags; [reflexivity|assumption].
+  - destruct assign; [apply hastyp_assign_R; [reflexivity|assumption]|styp].
 Qed.
 Hint Resolve  hastyp_arm_data_il : lifter.
 
@@ -6116,6 +6144,12 @@ Proof.
   all: try eapply hastyp_arm_data_il; try reflexivity.
   all: try estyp.
   all: match_awcs.
+  all: apply hastyp_Pack_NZCV.
+  all: try estyp.
+  all: match_awcs.
+  all: unfold sizeof_c; rewrite ?typeof_arm_varid; cbn [widthof_binop].
+  all: try lia.
+  all: match_awcs.
 Qed.
 Hint Resolve  hastyp_arm_logshft_reg2il : lifter.
 
@@ -6189,6 +6223,7 @@ Proof.
   all: try (unfold arm64_R; psimpl; eapply TCast with (w:=64); [estyp | lia]).
   all: lia. 
 Qed.
+Hint Resolve hastyp_arm_data_r_shift_il : lifter.
 
 Local Lemma hastyp_arm_data_r_with_cond:
 forall i sf Rn cond Rm nzcv,
