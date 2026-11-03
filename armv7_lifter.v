@@ -2392,13 +2392,17 @@ Proof.
         pose proof (N.mod_lt a (2^w2)).
         rewrite <-N.Div0.add_mod_idemp_l, N.Div0.add_mod_idemp_r, N.add_assoc, N.add_sub_assoc, 2N.add_sub_swap, N.sub_diag, N.add_0_l in W by lia.
         now rewrite <-N.Div0.add_mod_idemp_r, N.Div0.mod_same, N.add_0_r, N.mod_small, NW in W by assumption.
-  - apply forall_stmts_in_seq in MUS as [? _]. inversion NAW. now apply IHXS.
-  - apply forall_stmts_in_seq in MUS as [A B]. inversion NAW.
+  - destruct MUS as [_ [A _]]. inversion NAW. now apply IHXS.
+  - destruct MUS as [_ [A B]]. inversion NAW.
     apply (noassign_stmt_same A_WRITE _ AA1) in XS1; inversion XS1.
     specialize (IHXS1 A AA1 NW). rewrite H2 in NW. now rewrite (IHXS2 B AA2 NW) in IHXS1.
-  - apply forall_stmts_in_ite in MUS as [A B]. inversion NAW. apply IHXS; now destruct b.
-  - apply forall_stmts_in_rep in MUS. inversion NAW. apply IHXS.
-      now apply forall_stmts_in_iter.
+  - destruct MUS as [_ [A B]]. inversion NAW. apply IHXS; now destruct b.
+  - destruct MUS as [_ MUS]. inversion NAW. apply IHXS.
+      unfold mem_uses_store in *. generalize n. apply N.peano_ind.
+        intros exp H. discriminate.
+        intros k IH. rewrite N.iter_succ. split.
+          intros exp H. discriminate.
+          now split.
       unfold noassign. generalize n. apply N.peano_ind. constructor. intros. rewrite N.iter_succ. now constructor.
       assumption.
 Qed.
