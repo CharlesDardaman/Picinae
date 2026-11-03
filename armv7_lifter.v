@@ -1554,13 +1554,13 @@ Definition arm_ls_il op cond P U W Rn (Rt: N) offset :=
   (* ldr literal aligns R[15] by 4, but since we only support ARM mode, this is the same *)
   let offset_addr := BinOp binop R[Rn] offset in
   let addr := if index then offset_addr else R[Rn] in
-  let op := op addr Rt in
   if wback then
-    (* the manual has the move occur first for some loads, but that would mess up the value of Rn in the load/store *)
-    (* ldr is unpredictable when Rn=Rt with wback, so this is still fine *)
-    arm_cond_il cond (Seq op (R[Rn] := offset_addr))
+    (* DDI0406C.d A8.8.64/.67, PDF pp410/416: capture the address before
+       writeback, and write back before Rt (which may alias Rm or be PC). *)
+    arm_cond_il cond (Seq (Move temp0 addr)
+      (Seq (R[Rn] := offset_addr) (op vtemp0 Rt)))
   else
-    arm_cond_il cond op.
+    arm_cond_il cond (op addr Rt).
 Definition arm_ls_op_il op :=
   let op := match op with
             | ARM_STR => fun addr Rt => MemU[addr, 4] := R[Rt]
@@ -1585,7 +1585,8 @@ Definition arm_bx_il cond Rm :=
 Definition arm_blx_r_il cond Rm :=
   arm_cond_il cond (Seq
     (Move temp0 R[Rm]) (Seq
-    (R[13] := (BinOp OP_PLUS (Var R_PC) (Word 4 32)))
+    (* DDI0406C.d A8.8.26, PDF p349: LR = address of next instruction. *)
+    (R[14] := (BinOp OP_PLUS (Var R_PC) (Word 4 32)))
     (BXWritePC vtemp0))
   ).
 Definition arm_b_il cond imm24 :=
@@ -1594,7 +1595,8 @@ Definition arm_b_il cond imm24 :=
 Definition arm_bl_il cond imm24 :=
   let imm32 := scast 26 32 (N.shiftl imm24 2) in
   arm_cond_il cond (Seq
-    (R[13] := (BinOp OP_PLUS (Var R_PC) (Word 4 32)))
+    (* DDI0406C.d A8.8.25, PDF p347: LR = PC - 4 in ARM state. *)
+    (R[14] := (BinOp OP_PLUS (Var R_PC) (Word 4 32)))
     (BranchWritePC (BinOp OP_PLUS R[15] (Word imm32 32)))
   ).
 
@@ -1640,7 +1642,12 @@ Definition arm_stm_il start_val wback_val cond W Rn register_list :=
     if (i =? Rn) && (W =? 1) && (negb (i =? LowestSetBit register_list 32)) then
       Unknown 32
     else
-      R[i] in
+      (* DDI0406C.d A8.8.200-.203, PDF pp666/668/670/672: STM stores
+         the original base when it is the lowest listed register. temp0
+         holds the original start address, even after base writeback. *)
+      if (i =? Rn) && (W =? 1) then
+        BinOp OP_MINUS vtemp0 (Word start_val 32)
+      else R[i] in
   arm_lsm_il_
     (fun i j => MemU[BinOp OP_PLUS vtemp0 (Word (j*4 mod 64) 32), 4] := (stored_val i))
     (MemU[BinOp OP_PLUS vtemp0 (Word (4 * popcount (register_list mod 2^16) - 4) 32), 4] := R[15])
@@ -2145,27 +2152,43 @@ Local Lemma hastyp_arm_ls_i:
     imm12 < 2 ^ 12 ->
     hastyp_stmt armc armc (arm_ls_i_il op cond P U W Rn Rt imm12) armc.
 Proof.
-  intros. repeat unfold_stmt. destruct_match; hammer;
+  intros. unfold arm_ls_i_il, arm_ls_op_il, arm_ls_il.
+  destruct_match; apply hastyp_arm_cond;
+    try match goal with
+    | |- hastyp_stmt _ _ (Seq (Move temp0 _) _) _ => stypc armct
+    end;
+    hammer;
     match goal with
     | |- context[CAST_UNSIGNED] => etyps 8; hammer
     | |- context[CAST_LOW] => etyps 32
     | _ => idtac
-    end; lia.
+    end; try lia; try (left; reflexivity); try reflexivity; try apply armct_sub.
 Qed.
 Local Lemma hastyp_arm_ls_r:
   forall op cond P U W Rn Rt imm5 type Rm,
     imm5 < 2 ^ 5 ->
     hastyp_stmt armc armc (arm_ls_r_il op cond P U W Rn Rt imm5 type Rm) armc.
 Proof.
-  intros. repeat unfold_stmt. dimmshift; hammer.
-    repeat unfold_stmt; destruct_match; hammer;
-      match goal with
-      | |- context[CAST_UNSIGNED] => etyps 8; hammer
-      | |- context[CAST_LOW] => etyps 32
-      | _ => idtac
-      end; assumption || lia.
-    assumption.
-    lia.
+  intros. unfold arm_ls_r_il.
+  destruct (DecodeImmShift type imm5) as [shift_t shift_n] eqn:DI.
+  assert (HN: hastyp_exp armc shift_n 32).
+  { eapply hastyp_DecodeImmShift; [exact DI | lia]. }
+  destruct (Shift_C R[Rm] shift_t shift_n (Var R_CF)) as [offset carry] eqn:SH.
+  apply hastyp_Shift_C in SH;
+    [destruct SH as [HO HC] | apply hastyp_R; reflexivity | exact HN | now constructor].
+  assert (HOT: hastyp_exp armct offset 32).
+  { eapply hastyp_exp_weaken; [exact HO | apply armct_sub]. }
+  unfold arm_ls_op_il, arm_ls_il.
+  destruct_match; apply hastyp_arm_cond;
+    try match goal with
+    | |- hastyp_stmt _ _ (Seq (Move temp0 _) _) _ => stypc armct
+    end;
+    hammer;
+    match goal with
+    | |- context[CAST_UNSIGNED] => etyps 8; hammer
+    | |- context[CAST_LOW] => etyps 32
+    | _ => idtac
+    end; try assumption; try lia; try (left; reflexivity); try reflexivity; try apply armct_sub.
 Qed.
 Local Lemma hastyp_for:
   forall reg_list f,
@@ -2201,7 +2224,7 @@ Proof.
   all: match goal with
        | |- match _ with _ => _ end - 4 < _ => destruct popcount eqn:e;
        pose proof (popcount_bound (register_list mod 65536)); pose proof (size_le_diag (register_list mod 65536)); pose proof (N.mod_lt register_list 65536 ltac:(discriminate)); lia
-       | _ => destruct_match; hammer; pose proof (N.mod_lt (m*4) 64); lia
+       | _ => destruct_match; hammer; first [apply ofZ_bound | pose proof (N.mod_lt (m*4) 64); lia]
        end.
 Qed.
 
