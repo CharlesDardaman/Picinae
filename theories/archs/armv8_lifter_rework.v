@@ -260,9 +260,10 @@ Definition ConditionHolds (cond:N) : exp :=
   | 1 (* CS_CC *) => <{flip ^ (C=1#1)}>
   | 2 (* MI_PL *) => <{flip ^ (N=1#1)}>
   | 3 (* VS_VC *) => <{flip ^ (V=1#1)}>
-  | 4 (* HI_LS *) => <{flip ^ (C=1#1 & Z=0#1)}>
+  (* DDI0487 M.d J1.4.3.363, PDF p16669: conjunctions of comparisons. *)
+  | 4 (* HI_LS *) => <{flip ^ ((C=1#1) & (Z=0#1))}>
   | 5 (* GE_LT *) => <{flip ^ (N=V)}>
-  | 6 (* GT_LE *) => <{flip ^ (N=V & Z=0#1)}>
+  | 6 (* GT_LE *) => <{flip ^ ((N=V) & (Z=0#1))}>
   | _ (* AL    *) => <{1#1}>
   end.
 
@@ -1671,8 +1672,8 @@ Section Decoder.
     | "10  0  1  0  1  -      " => ARM_EXCLUSIVE ARM_LDAXR 32 Rn Rs Rt Rt2 (* LDAXR - 32-bit variant on page C6-643 - *)
     | "10  0  1  1  0  -      " => ARM_EXCLUSIVE ARM_LDXP 32 Rn Rs Rt Rt2(* LDXP - 32-bit variant on page C6-748 - *)
     | "10  0  1  1  1  -      " => ARM_EXCLUSIVE ARM_LDAXP 32 Rn Rs Rt Rt2 (* LDAXP - 32-bit variant on page C6-641 - *)
-    | "10  1  0  0  0  -      " => ARM_EXCLUSIVE ARM_STLLR 64 Rn Rs Rt Rt2 (* STLLR - 32-bit variant on page C6-852 ARMv8.1 *)
-    | "10  1  0  0  1  -      " => ARM_EXCLUSIVE ARM_STLR 64 Rn Rs Rt Rt2  (* STLR - 32-bit variant on page C6-853 - *)
+    | "10  1  0  0  0  -      " => ARM_EXCLUSIVE ARM_STLLR 32 Rn Rs Rt Rt2 (* DDI0487 M.d C6.2.399, PDF p2693: datasize = 8 << UInt(size). *)
+    | "10  1  0  0  1  -      " => ARM_EXCLUSIVE ARM_STLR 32 Rn Rs Rt Rt2  (* DDI0487 M.d C6.2.402, PDF p2697: 32-bit variant. *)
     | "10  1  0  1  0  11111  " => ARM_EXCLUSIVE ARM_CAS 32 Rn Rs Rt Rt2  (* CAS, CASA, CASAL, CASL - 32-bit, no memory ordering *)
     | "10  1  0  1  1  11111  " => ARM_EXCLUSIVE ARM_CAS 32 Rn Rs Rt Rt2  (* CAS, CASA, CASAL, CASL - 32-bit, release variant on *)
     | "10  1  1  0  0  -      " => ARM_EXCLUSIVE ARM_LDLAR 32 Rn Rs Rt Rt2(* LDLAR - 32-bit variant on page C6-661 *)
@@ -1703,7 +1704,8 @@ Section Decoder.
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
     let address := <{X[Xn]+offset#64}> in
     let bytes := N.shiftr size 3 in
-    <{ check; store[address,X[Xn],bytes] }>.
+    (* DDI0487 M.d C6.2.406-408, PDF pp2706/2708/2710: data is X[t,datasize]. *)
+    <{ check; store[address,lcast size X[Xt],bytes] }>.
 
   Definition arm_stlurb2il := arm_stlur2il_size 8.
   Definition arm_stlurh2il := arm_stlur2il_size 16.
@@ -2080,8 +2082,8 @@ Section Decoder.
     | "x1  1  1x" => UDF (* Unallocated. *)
     | "00  0  00" => ARM_LOAD_GEN ARM_STURB Rn Rt imm9 size(* STURB *)
     | "00  0  01" => ARM_LOAD_GEN ARM_LDURB Rn Rt imm9 size(* LDURB *)
-    | "00  0  10" => ARM_LOAD_GEN ARM_LDURSB Rn Rt imm9 32 (* LDURSB - 64-bit variant on page C6-743 *)
-    | "00  0  11" => ARM_LOAD_GEN ARM_LDURSB Rn Rt imm9 64 (* LDURSB - 32-bit variant on page C6-743 *)
+    | "00  0  10" => ARM_LOAD_GEN ARM_LDURSB Rn Rt imm9 64 (* DDI0487 M.d C6.2.262, PDF p2411: opc=10 selects Xt. *)
+    | "00  0  11" => ARM_LOAD_GEN ARM_LDURSB Rn Rt imm9 32 (* DDI0487 M.d C6.2.262, PDF p2411: opc=11 selects Wt. *)
     | "00  1  00" => UDF (* STUR (SIMD&FP) - 8-bit variant on page C7-1638 *)
     | "00  1  01" => UDF (* LDUR (SIMD&FP) - 8-bit variant on page C7-1367 *)
     | "00  1  10" => UDF (* STUR (SIMD&FP) - 128-bit variant on page C7-1638 *)
@@ -2109,7 +2111,8 @@ Section Decoder.
 
   (* Size is 8, 16, 32, or 64 *)
   Definition arm_str_imm2il_size_constr (size Xn Xt imm912:N) (signed wback postindex rtunknown:bool) :=
-    let offset := if signed then scast 9 64 imm912 else imm912 in
+    let offset := if signed then scast 9 64 imm912 else
+                  (N.shiftl imm912 (N.log2 size - 3)) mod 2^64 in
     let scale := N.log2 size - 3 in
     let datasize := size in
     let bytes := N.shiftr size 3 in
@@ -2137,7 +2140,8 @@ Section Decoder.
   Definition arm_strh_imm2il := arm_str_imm2il_size 16.
 
   Definition arm_ldr_imm2il_size_constr (size Xn Xt imm912:N) (signed wback postindex wbunknown:bool) :=
-    let offset := if signed then scast 9 64 imm912 else imm912 in
+    let offset := if signed then scast 9 64 imm912 else
+                  (N.shiftl imm912 (N.log2 size - 3)) mod 2^64 in
     let regsize := size in
     let datasize := size in
     let bytes := N.shiftr datasize 3 in
@@ -2167,7 +2171,8 @@ Section Decoder.
   (* Where w is the width to load from memory (8, 16 or 32) and w'
      is the width to extend it to (32 or 64). *)
   Definition arm_ldrs_imm2il_size_constr (w w' Xn Xt imm912:N) (signed wback postindex wbunknown:bool) :=
-    let offset := if signed then scast 9 64 imm912 else N.shiftl imm912 1 in
+    let offset := if signed then scast 9 64 imm912 else
+                  (N.shiftl imm912 (N.log2 w - 3)) mod 2^64 in
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
     let address := if postindex then <{X[Xn]}> else <{X[Xn]+offset#64}> in
     let bytes := N.shiftr w 3 in
@@ -2631,6 +2636,7 @@ Section Decoder.
      w' - width to sign extend to *)
   Definition arm_ldr_reg2il_size_signed size (signed:bool) w' S Xn Xm Xt extend :=
     let shift := match size, S with
+                 | 16, 1 => 1 (* DDI0487 M.d C6.2.223/227, PDF pp2321/2331. *)
                  | 32, 1 => 2
                  | 64, 1 => 3
                  | _, _ => 0 end in
@@ -2642,7 +2648,7 @@ Section Decoder.
     <{check; var[Xt] := ucast 64 data}>.
 
   Definition arm_ldrb_reg2il := arm_ldr_reg2il_size_signed 8 false 32 0.
-  Definition arm_ldrh_reg2il := arm_ldr_reg2il_size_signed 16 false 32 0.
+  Definition arm_ldrh_reg2il := arm_ldr_reg2il_size_signed 16 false 32.
   Definition arm_ldr_reg2il size := arm_ldr_reg2il_size_signed size false 32.
 
   Definition arm_ldrsb_reg2il := arm_ldr_reg2il_size_signed 8 true.
@@ -2651,6 +2657,7 @@ Section Decoder.
 
   Definition arm_str_reg2il_size size S Xn Xm Xt extend :=
     let shift := match size, S with
+                 | 16, 1 => 1 (* DDI0487 M.d C6.2.420, PDF p2742. *)
                  | 32, 1 => 2
                  | 64, 1 => 3
                  | _, _ => 0 end in
@@ -2662,7 +2669,7 @@ Section Decoder.
     <{check; store[address,data,bytes]}>.
 
   Definition arm_strb_reg2il := arm_str_reg2il_size 8 0.
-  Definition arm_strh_reg2il := arm_str_reg2il_size 16 0.
+  Definition arm_strh_reg2il := arm_str_reg2il_size 16.
   Definition arm_str_reg2il := arm_str_reg2il_size.
 
   (*register offset*)
@@ -2755,6 +2762,8 @@ Section Decoder.
      we'd need to add logic for calculating the offset. Might be worth it
      to cut down on loc. *)
 (*unsigned immediate*)
+  (* DDI0487 M.d C6.2.216, PDF p2304 (and corresponding byte/halfword/signed
+     load/store sections): unsigned offset has neither writeback nor postindex. *)
   Definition load_store_reg_u_imm  :=
     let opc := n.[22,24] in
     let size := n.[30,32] in
@@ -2764,29 +2773,29 @@ Section Decoder.
     let imm12 := n.[10,22] in
     match[bits] size, v_, opc with
     | "x1  1  1x" => UDF (* Unallocated. *)
-    | "00  0  00" => ARM_INDEXED ARM_STRB_IMM Rn Rt imm12 size false true true (* STRB (immediate) *)
-    | "00  0  01" => ARM_INDEXED ARM_LDRB_IMM Rn Rt imm12 size false true true (* LDRB (immediate) *)
-    | "00  0  10" => ARM_INDEXED ARM_LDRSB_IMM Rn Rt imm12 64 false true true (* LDRSB (immediate) - 64-bit variant on page C6-685 *)
-    | "00  0  11" => ARM_INDEXED ARM_LDRSB_IMM Rn Rt imm12 32 false true true (* LDRSB (immediate) - 32-bit variant on page C6-685 *)
+    | "00  0  00" => ARM_INDEXED ARM_STRB_IMM Rn Rt imm12 size false false false (* STRB (immediate) *)
+    | "00  0  01" => ARM_INDEXED ARM_LDRB_IMM Rn Rt imm12 size false false false (* LDRB (immediate) *)
+    | "00  0  10" => ARM_INDEXED ARM_LDRSB_IMM Rn Rt imm12 64 false false false (* LDRSB (immediate) - 64-bit variant on page C6-685 *)
+    | "00  0  11" => ARM_INDEXED ARM_LDRSB_IMM Rn Rt imm12 32 false false false (* LDRSB (immediate) - 32-bit variant on page C6-685 *)
     | "00  1  00" => UDF (* STR (immediate, SIMD&FP) - 8-bit variant on page C7-1631 *)
     | "00  1  01" => UDF (* LDR (immediate, SIMD&FP) - 8-bit variant on page C7-1358 *)
     | "00  1  10" => UDF (* STR (immediate, SIMD&FP) - 128-bit variant on page C7-1631 *)
     | "00  1  11" => UDF (* LDR (immediate, SIMD&FP) - 128-bit variant on page C7-1358 *)
-    | "01  0  00" => ARM_INDEXED ARM_STRH_IMM Rn Rt imm12 size false true true (* STRH (immediate) *)
-    | "01  0  01" => ARM_INDEXED ARM_LDRH_IMM Rn Rt imm12 size false true true (* LDRH (immediate) *)
-    | "01  0  10" => ARM_INDEXED ARM_LDRSH_IMM Rn Rt imm12 64 false true true (* LDRSH (immediate) - 64-bit variant on page C6-690 *)
-    | "01  0  11" => ARM_INDEXED ARM_LDRSH_IMM Rn Rt imm12 32 false true true (* LDRSH (immediate) - 32-bit variant on page C6-690 *)
+    | "01  0  00" => ARM_INDEXED ARM_STRH_IMM Rn Rt imm12 size false false false (* STRH (immediate) *)
+    | "01  0  01" => ARM_INDEXED ARM_LDRH_IMM Rn Rt imm12 size false false false (* LDRH (immediate) *)
+    | "01  0  10" => ARM_INDEXED ARM_LDRSH_IMM Rn Rt imm12 64 false false false (* LDRSH (immediate) - 64-bit variant on page C6-690 *)
+    | "01  0  11" => ARM_INDEXED ARM_LDRSH_IMM Rn Rt imm12 32 false false false (* LDRSH (immediate) - 32-bit variant on page C6-690 *)
     | "01  1  00" => UDF (* STR (immediate, SIMD&FP) - 16-bit variant on page C7-1631 *)
     | "01  1  01" => UDF (* LDR (immediate, SIMD&FP) - 16-bit variant on page C7-1358 *)
     | "1x  0  11" => UDF (* Unallocated. *)
     | "1x  1  1x" => UDF (* Unallocated. *)
-    | "10  0  00" => ARM_INDEXED ARM_STR_IMM Rn Rt imm12 32 false true true (* STR (immediate) - 32-bit variant on page C6-870 *)
-    | "10  0  01" => ARM_INDEXED ARM_LDR_IMM Rn Rt imm12 32 false true true (* LDR (immediate) - 32-bit variant on page C6-670 *)
-    | "10  0  10" => ARM_INDEXED ARM_LDRSW_IMM Rn Rt imm12 size false true true (* LDRSW (immediate) *)
+    | "10  0  00" => ARM_INDEXED ARM_STR_IMM Rn Rt imm12 32 false false false (* STR (immediate) - 32-bit variant on page C6-870 *)
+    | "10  0  01" => ARM_INDEXED ARM_LDR_IMM Rn Rt imm12 32 false false false (* LDR (immediate) - 32-bit variant on page C6-670 *)
+    | "10  0  10" => ARM_INDEXED ARM_LDRSW_IMM Rn Rt imm12 size false false false (* LDRSW (immediate) *)
     | "10  1  00" => UDF (* STR (immediate, SIMD&FP) - 32-bit variant on page C7-1631 *)
     | "10  1  01" => UDF (* LDR (immediate, SIMD&FP) - 32-bit variant on page C7-1358 *)
-    | "11  0  00" => ARM_INDEXED ARM_STR_IMM Rn Rt imm12 64 false true true (* STR (immediate) - 64-bit variant on page C6-870 *)
-    | "11  0  01" => ARM_INDEXED ARM_LDR_IMM Rn Rt imm12 64 false true true (* LDR (immediate) - 64-bit variant on page C6-670 *)
+    | "11  0  00" => ARM_INDEXED ARM_STR_IMM Rn Rt imm12 64 false false false (* STR (immediate) - 64-bit variant on page C6-870 *)
+    | "11  0  01" => ARM_INDEXED ARM_LDR_IMM Rn Rt imm12 64 false false false (* LDR (immediate) - 64-bit variant on page C6-670 *)
     | "11  0  10" => ARM_LOAD_GEN ARM_PRFM_IMM Rn Rt imm12 size (* PRFM (immediate) *)
     | "11  1  00" => UDF (* STR (immediate, SIMD&FP) - 64-bit variant on page C7-2115 *)
     | "11  1  01" => UDF (* LDR (immediate, SIMD&FP) - 64-bit variant on page C7-1801 *)
@@ -5225,7 +5234,7 @@ Local Lemma hastyp_arm_str_imm2il_size_constr:
 Proof.
   intros; unfold_stmt. apply hastyp_stmt_weaken with (c1 := arm8typctx). destruct_match.
   29: apply armc_pc_sub.
-  all: try solve [repeat econs; try reflexivity; subsolve; symmetry; reflexivity]. 
+  all: try solve [repeat econs; try solve [apply N.mod_lt; discriminate]; try reflexivity; subsolve; symmetry; reflexivity].
 Qed.
 Hint Resolve  hastyp_arm_str_imm2il_size_constr : lifter.
 
@@ -5261,7 +5270,7 @@ Local Lemma hastyp_arm_ldr_imm2il_size_constr:
 Proof.
   intros; unfold_stmt. apply hastyp_stmt_weaken with (c1 := arm8typctx). destruct_match.
   21: apply armc_pc_sub.
-  all: try solve [repeat econs; try reflexivity; subsolve; symmetry; (reflexivity||apply typeof_arm_varid)]. 
+  all: try solve [repeat econs; try solve [apply N.mod_lt; discriminate]; try reflexivity; subsolve; symmetry; (reflexivity||apply typeof_arm_varid)].
 Qed.
 Hint Resolve  hastyp_arm_ldr_imm2il_size_constr : lifter.
 
@@ -5295,7 +5304,7 @@ Local Lemma hastyp_arm_ldrs_imm2il_size_constr:
 Proof.
   intros; unfold_stmt. apply hastyp_stmt_weaken with (c1 := arm8typctx). destruct_match.
   21: apply armc_pc_sub.
-  all: try solve [repeat econs; try reflexivity; subsolve; symmetry; (reflexivity||apply typeof_arm_varid)]. 
+  all: try solve [repeat econs; try solve [apply N.mod_lt; discriminate]; try reflexivity; subsolve; symmetry; (reflexivity||apply typeof_arm_varid)].
 Qed.
 Hint Resolve  hastyp_arm_ldrs_imm2il_size_constr : lifter.
 
@@ -5362,13 +5371,13 @@ Proof.
   intros; unfold_stmt. 
   
   apply hastyp_stmt_weaken with (c1 := arm8typctx). destruct_match.
-  89: apply armc_pc_sub.
+  all: try apply armc_pc_sub.
   all: try solve [repeat econs; try reflexivity; subsolve; symmetry; (reflexivity||apply typeof_arm_varid)]. 
 Qed.
 Hint Resolve  hastyp_arm_ldr_reg2il_size_signed : lifter.
 
 Definition hastyp_arm_ldrb_reg2il := hastyp_arm_ldr_reg2il_size_signed 8 false 32 0.
-Definition hastyp_arm_ldrh_reg2il := hastyp_arm_ldr_reg2il_size_signed 16 false 32 0.
+Definition hastyp_arm_ldrh_reg2il := hastyp_arm_ldr_reg2il_size_signed 16 false 32.
 Definition hastyp_arm_ldr_reg2il size := hastyp_arm_ldr_reg2il_size_signed size false 32.
 
 Definition hastyp_arm_ldrsb_reg2il := hastyp_arm_ldr_reg2il_size_signed 8 true.
@@ -5389,7 +5398,7 @@ Hint Resolve  hastyp_arm_str_reg2il_size : lifter.
 
 
 Definition hastyp_arm_strb_reg2il := hastyp_arm_str_reg2il_size 8 0.
-Definition hastyp_arm_strh_reg2il := hastyp_arm_str_reg2il_size 16 0.
+Definition hastyp_arm_strh_reg2il := hastyp_arm_str_reg2il_size 16.
 Definition hastyp_arm_str_reg2il := hastyp_arm_str_reg2il_size.
 
 Hint Unfold arm_str_reg2il arm_strb_reg2il arm_strh_reg2il : lifter.
@@ -6520,8 +6529,8 @@ let il := match inst with
 | ARM_LD_STR_REG ARM_STRB_REG Xn Xm Xt extend _ _ => arm_strb_reg2il Xn Xm Xt extend
 | ARM_LD_STR_REG ARM_LDRB_REG Xn Xm Xt extend _ _ => arm_ldrb_reg2il Xn Xm Xt extend
 | ARM_LD_STR_REG ARM_LDRSB_REG Xn Xm Xt extend size _=> arm_ldrsb_reg2il size 0 Xn Xm Xt extend
-| ARM_LD_STR_REG ARM_STRH_REG Xn Xm Xt extend _ s => arm_strh_reg2il Xn Xm Xt extend
-| ARM_LD_STR_REG ARM_LDRH_REG Xn Xm Xt extend _ s => arm_ldrh_reg2il Xn Xm Xt extend
+| ARM_LD_STR_REG ARM_STRH_REG Xn Xm Xt extend _ s => arm_strh_reg2il s Xn Xm Xt extend
+| ARM_LD_STR_REG ARM_LDRH_REG Xn Xm Xt extend _ s => arm_ldrh_reg2il s Xn Xm Xt extend
 | ARM_LD_STR_REG ARM_LDRSH_REG Xn Xm Xt extend size s => arm_ldrsh_reg2il size s Xn Xm Xt extend
 | ARM_LD_STR_REG ARM_STR_REG Xn Xm Xt extend size s => arm_str_reg2il size s Xn Xm Xt extend
 | ARM_LD_STR_REG ARM_LDR_REG Xn Xm Xt extend size s => arm_ldr_reg2il size s Xn Xm Xt extend
