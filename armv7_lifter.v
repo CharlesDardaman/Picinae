@@ -1,6 +1,6 @@
 (* decoder/lifter for ARMv7 *)
 
-Require Export Picinae_armv7.
+From Picinae.archs Require Export armv7.
 Require Import NArith.
 Require Import ZArith.
 Require Import Bool.
@@ -1300,7 +1300,7 @@ Definition arm_cond_exp n :=
               | 2 | 3 => Var R_CF
               | 4 | 5 => Var R_NF
               | 6 | 7 => Var R_VF
-              | 8 | 9 => BinOp OP_AND (Var R_CF) (UnOp OP_NOT (Var R_CF))
+              | 8 | 9 => BinOp OP_AND (Var R_CF) (UnOp OP_NOT (Var R_ZF))
               | 10 | 11 => BinOp OP_EQ (Var R_NF) (Var R_VF)
               | 12 | 13 => BinOp OP_AND (UnOp OP_NOT (Var R_ZF)) (BinOp OP_EQ (Var R_NF) (Var R_VF))
               | _ => Word 1 1
@@ -1385,6 +1385,7 @@ Definition Shift_C value type amount carry_in :=
         let c := Cast CAST_LOW 1 (BinOp OP_ARSHIFT value (BinOp OP_MINUS amount (Word 1 32))) in
         (r, c)
     | ARM_ROR =>
+        let amount := BinOp OP_MOD amount (Word 32 32) in
         let x := BinOp OP_RSHIFT value amount in
         let y := BinOp OP_LSHIFT value (BinOp OP_MINUS (Word 32 32) amount) in
         let r := BinOp OP_OR x y in
@@ -1408,13 +1409,11 @@ Definition AddWithCarry x y carry_in :=
   (* unsigned overflow *)
   let carry_out := BinOp OP_OR
     (BinOp OP_LT result x)
-    (BinOp OP_AND (BinOp OP_EQ result (Word 0xffff_ffff 32)) carry_in) in
+    (BinOp OP_AND (BinOp OP_EQ result x) carry_in) in
   (* signed overflow *)
-  let overflow := BinOp OP_OR
-    (BinOp OP_SLT
-      (BinOp OP_AND (BinOp OP_XOR x result) (BinOp OP_XOR y result))  (* msb=1 if x and result, y and result have diff sign *)
-      (Word 0 32))
-    (BinOp OP_AND (BinOp OP_EQ result (Word 0x7fff_ffff 32)) carry_in) in
+  let overflow := BinOp OP_SLT
+    (BinOp OP_AND (BinOp OP_XOR x result) (BinOp OP_XOR y result))  (* msb=1 if x and result, y and result have diff sign *)
+    (Word 0 32) in
   (result, carry_out, overflow).
 
 Definition sizeof v :=
@@ -1460,19 +1459,21 @@ Notation LoadWritePC := BXWritePC (only parsing). (* different before v5 *)
 Definition arm_data_flag result carry overflow :=
   Seq (Move R_NF (Cast CAST_HIGH 1 result))
     (Seq (Move R_ZF (BinOp OP_EQ result (Word 0 32)))
-      (Seq (Move R_CF carry)
-        (Move R_VF overflow))).
+      (Seq (Move R_VF overflow)
+        (Move R_CF carry))).
 Definition arm_data_il (assign: bool) cond S Rd result carry overflow :=
   arm_cond_il cond
     (if (Rd =? 15) then
       ALUWritePC result
     else
-      let assign := if assign then R[Rd] := result else Nop in
       if (S =? 1) then
-        (* the manual has the assign first, but that would mess up the value of result for the flag il *)
-        Seq (arm_data_flag result carry overflow) assign
+        (* Preserve the result before updating C: ADC/SBC/RSC and RRX read it.
+           Overflow is evaluated before C too, while operands are unchanged. *)
+        Seq (Move temp0 result)
+          (Seq (arm_data_flag result carry overflow)
+            (if assign then R[Rd] := vtemp0 else Nop))
       else
-        assign).
+        if assign then R[Rd] := result else Nop).
 Definition arm_data_op_il op shiftc addwcarry : stmt :=
   match op with
   | ARM_AND => shiftc    true  (fun a b => BinOp OP_AND a b)
@@ -1998,9 +1999,8 @@ Local Lemma hastyp_Shift_C:
     hastyp_exp armc ci 1 ->
     hastyp_exp armc r 32 /\ hastyp_exp armc co 1.
 Proof.
-  intros v t a ci r co. unfold Shift_C.
-  split. destruct t. inversion H. styp; first [now etyps 32 | now etyps 33].
-  split; destruct t; intros; inversion H; styp; first [now etyps 32 | now etyps 33].
+  intros v t a ci r co HS HV HA HC. unfold Shift_C in HS.
+  destruct t; inversion HS; subst; split; styp; first [now etyps 32 | now etyps 33].
 Qed.
 
 Local Lemma hastyp_R:
@@ -2076,7 +2076,30 @@ Local Lemma hastyp_arm_data:
     hastyp_exp armc overflow 1 ->
     hastyp_stmt armc armc (arm_data_il assign cond s Rd result carry overflow) armc.
 Proof.
-  intros. unfold_stmt. destruct_match; hammer; now etyps 32.
+  intros assign cond s Rd result carry overflow HR HC HV.
+  assert (HRt: hastyp_exp armct result 32).
+    { eapply hastyp_exp_weaken; [exact HR | exact armct_sub]. }
+  assert (HCt: hastyp_exp armct carry 1).
+    { eapply hastyp_exp_weaken; [exact HC | exact armct_sub]. }
+  assert (HVt: hastyp_exp armct overflow 1).
+    { eapply hastyp_exp_weaken; [exact HV | exact armct_sub]. }
+  unfold arm_data_il. apply hastyp_arm_cond.
+  destruct (Rd =? 15).
+    now apply hastyp_bxwritepc.
+  destruct (s =? 1).
+    eapply TSeq with (c1 := armct) (c2 := armc).
+      apply TMove with (w := 32); [now left | exact HR | reflexivity].
+      eapply TSeq with (c1 := armct) (c2 := armc).
+        unfold arm_data_flag. stypc armct; try assumption; now etyps 32.
+        destruct assign.
+          unfold arm_assign_R. apply TMove with (w := 32).
+            right. apply typeof_arm_varid.
+            constructor. reflexivity.
+            apply update_some; [apply typeof_arm_varid | exact armct_sub].
+          apply TNop. exact armct_sub.
+        reflexivity.
+      reflexivity.
+    destruct assign; hammer; assumption.
 Qed.
 Local Lemma hastyp_arm_data_op:
   forall op shiftc addwcarry,
