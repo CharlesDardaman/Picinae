@@ -1598,21 +1598,23 @@ Section Decoder.
   Definition arm_ldlarh2il := arm_ldxr2il_size 16.
   Definition arm_ldlar2il := arm_ldxr2il_size.
 
-  (* Size is 32 or 64 *)
+  (* Size is 32 or 64. DDI0487 M.d C6.2.265, PDF pp2417-2418:
+     capture the address before either destination can overwrite the base. *)
   Definition arm_ldxp2il_constr (size Xn Xt Xt2:N) (rtunknown:bool) :=
     let elsize := size in
     let datasize := elsize * 2 in
     let bytes := N.shiftr size 2 in
     let datasize := N.shiftl size 1 in
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
-    let address := <{X[Xn]}> in
-    if rtunknown then
+    let address := <{Xtemp[1]}> in
+    let loads := if rtunknown then
       <{var[Xt] := (unknown 64)}>
     else if elsize =? 32 then
       let data := <{load[address,8]}> in
       <{if BigEndian then (var[Xt]:=ucast 64 data[63:32]; var[Xt2]:=ucast 64 data[31:0])
              else (var[Xt]:=ucast 64 data[31:0]; var[Xt2]:=ucast 64 data[63:32]) end}>
-    else <{var[Xt]:=load[address,8]; var[Xt2]:=load[address+8#64,8]}>.
+    else <{var[Xt]:=load[address,8]; var[Xt2]:=load[address+8#64,8]}> in
+    <{temp[1] := X[Xn]; loads}>.
 
   Definition arm_ldxp2il (size Xn Xt Xt2:N) :=
     let constraint := Xt =? Xt2 in
@@ -1816,10 +1818,12 @@ Section Decoder.
     let dbytes := N.shiftl 1 scale in
     let offset := (N.shiftl (scast 7 64 imm7) scale) mod 2^64 in
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
-    let address := <{X[Xn]+offset#64}> in
+    (* DDI0487 M.d C6.2.213, PDF pp2294-2295: the pair uses one
+       address computed before the destination writes, including Xt = Xn. *)
+    let address := <{Xtemp[1]}> in
     let data1 := if rtunknown then <{unknown 64}> else <{ucast 64 load[address,dbytes]}> in
     let data2 := if rtunknown then <{unknown 64}> else <{ucast 64 load[address+dbytes#64,dbytes]}> in
-    <{check; var[Xt] := data1; var[Xt2] := data2}>.
+    <{check; temp[1] := X[Xn]+offset#64; var[Xt] := data1; var[Xt2] := data2}>.
 
   Definition arm_ldnp2il Xn Xt Xt2 imm7 scale :=
     let constraint := Xt =? Xt2 in
@@ -1858,7 +1862,10 @@ Section Decoder.
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
     let base := if Xn =? 31 then Var R_SP else <{X[Xn]}> in
     let wbreg    := if Xn =? 31 then R_SP else arm_varid Xn in
-    let address := if postindex then base else <{base + offset # 64}> in
+    (* DDI0487 M.d C6.2.214, PDF pp2298-2299: read the pair from
+       the original address before writing either register or writeback. *)
+    let initial_address := if postindex then base else <{base + offset # 64}> in
+    let address := <{Xtemp[1]}> in
     let data1 := if rtunknown then <{ucast 64 (unknown datasize)}> else <{ucast 64 load[address,dbytes]}> in
     let data2 := if rtunknown then <{ucast 64 (unknown datasize)}> else <{ucast 64 load[address+dbytes#64,dbytes]}> in
     let wbblock :=
@@ -1869,6 +1876,7 @@ Section Decoder.
     <{ {wbreg} := newbase }> in
     <{
       check;
+      temp[1] := initial_address;
       var[Xt]  := data1;
       var[Xt2] := data2;
       wbblock
@@ -1915,13 +1923,16 @@ Section Decoder.
     let offset := (N.shiftl (scast 7 64 imm7) 2) mod 2^64 in
     let tag_checked := wback || (negb (Xn =? 31)) in
     let check := if Xn =? 31 then CheckSPAlignment else Nop in
-    let address := if postindex then <{X[Xn]}> else <{X[Xn]+offset#64}> in
+    (* DDI0487 M.d C6.2.215, PDF pp2301-2302: sign extension and
+       destination writes follow the load using the captured address. *)
+    let initial_address := if postindex then <{X[Xn]}> else <{X[Xn]+offset#64}> in
+    let address := <{Xtemp[1]}> in
     let data1 := if rtunknown then <{(unknown 32)}> else <{load[address,4]}> in
     let data2 := if rtunknown then <{(unknown 32)}> else <{load[address+4#64,4]}> in
     let wbblock := if negb wback then Nop else
                    let address := if wbunknown then <{unknown 64}> else if postindex then <{address+offset#64}> else address in
                    <{var[Xn]:=address}> in
-    <{check; var[Xt]:=scast 64 data1; var[Xt2]:=scast 64 data2; wbblock}>.
+    <{check; temp[1] := initial_address; var[Xt]:=scast 64 data1; var[Xt2]:=scast 64 data2; wbblock}>.
 
   Definition arm_ldpsw2il (Xn Xt Xt2 imm7:N) (wback postindex:bool) :=
     let constraint1 := wback && ((Xt=?Xn) || (Xt2=?Xn)) && (negb (Xn=?31)) in
@@ -5099,24 +5110,28 @@ Local Lemma hastyp_arm_ldxp2il_constr:
   hastyp_stmt armc armc_pc (arm_ldxp2il_constr size Xn Xt Xt2 rtunknown) armc.
 Proof.
   intros; unfold_stmt.
-  destruct_match.
-  all: repeat econs.
-  17: reflexivity. 
-  12: reflexivity.
-  11: reflexivity.
-  6: reflexivity.
-  all: try rewrite armc_pc_upd. 
-  all: try lia.
-  all: try apply hastyp_XtoVar.
-  all: try apply armc_pc_sub.
-  all: try apply typeof_arm_varid.
-  all: try rewrite armc_upd.
-  all: try apply armc_pc_sub.
-  all: try apply update_some.
-  all: try apply typeof_arm_varid.
-  all: reflexivity.
-  Unshelve.
-  all: exact 4.
+  apply hastyp_stmt_weaken with (c1 := armc); [|apply armc_pc_sub].
+  eapply TSeq with (c1 := update armc (V_TEMP 1) (Some 64))
+                  (c2 := update armc (V_TEMP 1) (Some 64)).
+  - apply TMove with (w := 64).
+    + left; reflexivity.
+    + apply hastyp_XtoVar; reflexivity.
+    + reflexivity.
+  - destruct rtunknown, (size =? 32); unfold BigEndian;
+      stypc (update armc (V_TEMP 1) (Some 64)).
+    all: try (apply TMove with (w := 64); [right; apply typeof_arm_varid| |]).
+    all: try match goal with
+    | |- hastyp_exp _ (Cast _ _ (Extract _ _ _)) _ =>
+      apply TCast with (w := 32); [apply TExtract with (w := 64)|]
+    end.
+    all: etyp.
+    all: rewrite ?sizeof_arm_varid, ?typeof_arm_varid.
+    all: try (etyp; reflexivity).
+    all: try (subsolve; try symmetry; try apply typeof_arm_varid; try reflexivity;
+              cbn in EQ; discriminate).
+    all: try reflexivity.
+    all: try lia.
+  - apply update_fresh; reflexivity.
 Qed.
 Hint Resolve  hastyp_arm_ldxp2il_constr : lifter.
 
@@ -5125,45 +5140,52 @@ Local Lemma hastyp_arm_ldxp2il_size:
   (B1:Xn<2^5) (B3:Xt<2^5) (B4:size=8\/size=16\/size=32\/size=64) (B5:Xt2<2^5) ,
   hastyp_stmt armc armc_pc ((arm_ldxp2il size Xn Xt Xt2)) armc.
 Proof.
-  intros; unfold_stmt. destruct_match.
-  2: apply hastyp_arm_ldxp2il_constr; assumption.
-  repeat econs.
-  3: reflexivity. all: try rewrite armc_pc_upd.
-  all: try apply armc_pc_sub. all: try reflexivity.
-  try apply typeof_arm_varid. 
+  intros; unfold arm_ldxp2il; destruct (Xt =? Xt2).
+  - eapply TIf with (c2 := armc); [econs|apply hastyp_UNDEF_weak| |reflexivity].
+    eapply TIf with (c2 := armc); [econs| | |reflexivity].
+    + apply TNop, armc_pc_sub.
+    + apply hastyp_arm_ldxp2il_constr; assumption.
+  - apply hastyp_arm_ldxp2il_constr; assumption.
 Qed.
 Hint Resolve  hastyp_arm_ldxp2il_size : lifter.
+
+(* Preserve the captured pair address through both architectural writes. *)
+Local Ltac pair_load_styp c :=
+  repeat match goal with
+  | |- hastyp_stmt _ _ (Seq _ _) _ => apply TSeq with (c1 := c) (c2 := c)
+  | |- hastyp_stmt _ _ Nop _ => apply TNop
+  | |- hastyp_stmt _ _ (Move (arm_varid _) _) _ =>
+      apply TMove with (w := 64) (c' := c); [right; apply typeof_arm_varid| |]
+  | |- hastyp_stmt _ _ (Move R_SP _) _ =>
+      apply TMove with (w := 64) (c' := c); [right; reflexivity| |]
+  end.
 
 Local Lemma hastyp_arm_ldnp2il_constr:
   forall Xn Xt Xt2 imm7 scale rtunknown
   (B1:Xn<2^5) (B3:Xt<2^5) (B5:Xt2<2^5) (B2:imm7<2^7) (B4:scale=2\/scale=3),
   hastyp_stmt armc armc_pc (arm_ldnp2il_constr Xn Xt Xt2 imm7 scale rtunknown) armc.
 Proof.
-  intros; unfold_stmt. destruct_match.
-  1,2: eapply TSeq.
-  1,4: eapply hastyp_CheckSPAlignment; apply armc_pc_sub.
-
-  all: repeat econs.
-  18: reflexivity.
-  17: reflexivity.
-  12: reflexivity.
-  11: reflexivity.
-  9: reflexivity.
-  8: reflexivity.
-  2: reflexivity.
-  all: try rewrite armc_pc_upd.
-  all: try rewrite armc_upd.
-  all: try apply armc_pc_sub.
-  all: try (lia || reflexivity).
-  all: try subsolve.
-  all: try apply typeof_arm_varid.
-  all: try symmetry.
-  1,3: destruct B4; subst; now compute.
-  all: apply TBinOp with (bop:= OP_PLUS);[
-  apply hastyp_XtoVar, armc_pc_sub|
-  apply TWord; lia].
-  Unshelve.
-  all: exact 2.  (*TODO: fix this its ugly*)
+  intros; unfold_stmt.
+  apply hastyp_stmt_weaken with (c1 := armc); [|apply armc_pc_sub].
+  eapply TSeq with (c1 := armc) (c2 := update armc (V_TEMP 1) (Some 64)).
+  - destruct (Xn =? 31); [apply hastyp_CheckSPAlignment|apply TNop]; reflexivity.
+  - eapply TSeq with (c1 := update armc (V_TEMP 1) (Some 64))
+                    (c2 := update armc (V_TEMP 1) (Some 64)).
+    + apply TMove with (w := 64); [left; reflexivity| |reflexivity].
+      destruct_match; etyp; try apply hastyp_XtoVar; try reflexivity;
+        apply N.mod_lt; discriminate.
+    + destruct_match; pair_load_styp (update armc (V_TEMP 1) (Some 64)).
+      all: try match goal with
+      | |- hastyp_exp _ (Cast _ _ (Load _ _ _ ?bytes)) _ =>
+          apply TCast with (w := bytes * 8)
+      end.
+      all: etyp.
+      all: try (subsolve; try symmetry; try apply typeof_arm_varid; try reflexivity;
+                cbn in EQ; discriminate).
+      all: try reflexivity.
+      all: destruct B4; subst; lia.
+    + reflexivity.
+  - apply update_fresh; reflexivity.
 Qed.
 Hint Resolve  hastyp_arm_ldnp2il_constr : lifter.
 
@@ -5222,18 +5244,27 @@ Local Lemma hastyp_arm_ldp2il_constr:
   (B1:Xn<2^5) (B3:Xt<2^5) (B5:Xt2<2^5) (B6:imm7<2^7) (B7:scale=2\/scale=3),
   hastyp_stmt armc armc_pc (arm_ldp2il_constr Xn Xt Xt2 imm7 scale wback wb_unknown rt_unknown postindex) armc.
 Proof.
-  intros; unfold_stmt. all: apply hastyp_stmt_weaken with (c1 := arm8typctx). 
-  destruct_match.
-  all: time repeat econs. (* 7.17s *)
-  all: try rewrite armc_upd.
-  all: try reflexivity.
-  63: apply armc_pc_sub.
-  all: try apply typeof_arm_varid.
-  all: try apply sub_update_same.
-  all: try apply typeof_arm_varid.
-  all: try (etyp; destruct B7; subst; lia).
-  Unshelve.
-  all: exact 0.
+  intros; unfold_stmt.
+  apply hastyp_stmt_weaken with (c1 := armc); [|apply armc_pc_sub].
+  eapply TSeq with (c1 := armc) (c2 := update armc (V_TEMP 1) (Some 64)).
+  - destruct (Xn =? 31); [apply hastyp_CheckSPAlignment|apply TNop]; reflexivity.
+  - eapply TSeq with (c1 := update armc (V_TEMP 1) (Some 64))
+                    (c2 := update armc (V_TEMP 1) (Some 64)).
+    + apply TMove with (w := 64); [left; reflexivity| |reflexivity].
+      destruct_match; etyp; try apply hastyp_XtoVar; try reflexivity;
+        apply N.mod_lt; discriminate.
+    + destruct_match; pair_load_styp (update armc (V_TEMP 1) (Some 64)).
+      all: try match goal with
+      | |- hastyp_exp _ (Cast _ _ (Load _ _ _ ?bytes)) _ =>
+          apply TCast with (w := bytes * 8)
+      end.
+      all: etyp.
+      all: try (subsolve; try symmetry; try apply typeof_arm_varid; try reflexivity;
+                cbn in EQ; discriminate).
+      all: try reflexivity.
+      all: destruct B7; subst; lia.
+    + reflexivity.
+  - apply update_fresh; reflexivity.
 Qed.
 Hint Resolve  hastyp_arm_ldp2il_constr : lifter.
 
@@ -5263,10 +5294,27 @@ Local Lemma hastyp_arm_ldpsw2il_constr:
   (B1:Xn<2^5) (B3:Xt<2^5) (B4:imm7<2^7) (B5:Xt2<2^5),
   hastyp_stmt armc armc_pc (arm_ldpsw2il_constr Xn Xt Xt2 imm7 wback wb_unknown rt_unknown postindex) armc.
 Proof.
-  intros; unfold_stmt. apply hastyp_stmt_weaken with (c1 := arm8typctx). destruct_match.
-  21: apply armc_pc_sub.
-  all: try solve [repeat econs].
-  all: try solve [repeat econs; try reflexivity; subsolve; symmetry; apply typeof_arm_varid].
+  intros; unfold_stmt.
+  apply hastyp_stmt_weaken with (c1 := armc); [|apply armc_pc_sub].
+  eapply TSeq with (c1 := armc) (c2 := update armc (V_TEMP 1) (Some 64)).
+  - destruct (Xn =? 31); [apply hastyp_CheckSPAlignment|apply TNop]; reflexivity.
+  - eapply TSeq with (c1 := update armc (V_TEMP 1) (Some 64))
+                    (c2 := update armc (V_TEMP 1) (Some 64)).
+    + apply TMove with (w := 64); [left; reflexivity| |reflexivity].
+      destruct_match; etyp; try apply hastyp_XtoVar; try reflexivity;
+        apply N.mod_lt; discriminate.
+    + destruct_match; pair_load_styp (update armc (V_TEMP 1) (Some 64)).
+      all: try match goal with
+      | |- hastyp_exp _ (Cast _ _ (Load _ _ _ ?bytes)) _ =>
+          apply TCast with (w := bytes * 8)
+      end.
+      all: etyp.
+      all: try (subsolve; try symmetry; try apply typeof_arm_varid; try reflexivity;
+                cbn in EQ; discriminate).
+      all: try reflexivity.
+      all: try lia.
+    + reflexivity.
+  - apply update_fresh; reflexivity.
 Qed.
 Hint Resolve  hastyp_arm_ldpsw2il_constr : lifter.
 (*TODO: use what u did in the func above to make the others shorter*)
